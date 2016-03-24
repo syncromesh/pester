@@ -6,7 +6,7 @@
 - Backoff
 - LogRetries
 
-This variation introduces a dependency on the github.com/sbowman/glog fork of github.com/golang/glog. This dependency allows a client to log each retry as an Error. Configuration of glog is external to the package. When using the the constructor form of the pester client, logging of retries is enabled by default. To disable set the LogRetries attribute to false. 
+This fork of sethgrid's excellent implementation introduces a dependency on the github.com/sbowman/glog fork of github.com/golang/glog. This dependency allows a client to log each retry as an Error. Configuration of glog is external to the package. When using the constructor form of the pester client, logging of retries is enabled by default. To disable set the LogRetries attribute to false. 
 
 ### Simple Example
 Use `pester` where you would use the http client calls. By default, pester will use a concurrency of 1, and retry the endpoint 3 times with the `DefaultBackoff` strategy of waiting 1 second between retries.
