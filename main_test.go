@@ -1,9 +1,11 @@
 package pester_test
 
 import (
+	"strconv"
 	"testing"
 
-	"github.com/sethgrid/pester"
+	"github.com/sbowman/glog"
+	"github.com/syncromesh/pester"
 )
 
 func TestConcurrentRequests(t *testing.T) {
@@ -12,6 +14,8 @@ func TestConcurrentRequests(t *testing.T) {
 	c := pester.New()
 	c.Concurrency = 4
 	c.KeepLog = true
+
+	configureGlog(c.Threshold, c.Verbosity)
 
 	nonExistantURL := "http://localhost:9000/foo"
 
@@ -34,6 +38,8 @@ func TestDefaultBackoff(t *testing.T) {
 
 	c := pester.New()
 	c.KeepLog = true
+
+	configureGlog(c.Threshold, c.Verbosity)
 
 	nonExistantURL := "http://localhost:9000/foo"
 
@@ -71,6 +77,8 @@ func TestLinearJitterBackoff(t *testing.T) {
 	c := pester.New()
 	c.Backoff = pester.LinearJitterBackoff
 	c.KeepLog = true
+
+	configureGlog(c.Threshold, c.Verbosity)
 
 	nonExistantURL := "http://localhost:9000/foo"
 
@@ -110,6 +118,8 @@ func TestExponentialBackoff(t *testing.T) {
 	c.Backoff = pester.ExponentialBackoff
 	c.KeepLog = true
 
+	configureGlog(c.Threshold, c.Verbosity)
+
 	nonExistantURL := "http://localhost:9000/foo"
 
 	_, err := c.Get(nonExistantURL)
@@ -148,4 +158,16 @@ func withinEpsilon(got, want int64, epslion float64) bool {
 		return false
 	}
 	return true
+}
+
+func configureGlog(threshold string, verbosity int) *glog.GlogConfig {
+	c := glog.NewConfig()
+
+	c.StderrThreshold = threshold // e.g. Info
+	c.Verbosity = strconv.Itoa(verbosity)
+	// c.LogDir = directory
+
+	c.Init()
+
+	return c
 }
