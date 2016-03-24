@@ -15,7 +15,12 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/sbowman/glog"
 )
+
+// GlogStringTimeFormat produces timestamp strings like hh:mm:ss.uuuuuu
+var GlogStringTimeFormat = `15:04:05.999999`
 
 // Client wraps the http client and exposes all the functionality of the http.Client.
 // Additionally, Client provides pester specific values for handling resiliency.
@@ -33,6 +38,15 @@ type Client struct {
 	MaxRetries  int
 	Backoff     BackoffStrategy
 	KeepLog     bool
+
+	// LogRetries enables logging of retries when they happen - uses sbowman/glog
+	LogRetries bool
+	// Verbosity of debug messages; 0 is no debug (info only), 3 is most verbose.
+	Verbosity int
+	// Threshhold - Minimum log level to output to console (info, warn, error, or fatal)
+	Threshold string
+	// LogTimeFormat is used to format the time when LogRetries is true
+	LogTimeFormat string
 
 	SuccessReqNum   int
 	SuccessRetryNum int
@@ -75,10 +89,14 @@ type params struct {
 // New constructs a new DefaultClient with sensible default values
 func New() *Client {
 	return &Client{
-		Concurrency: DefaultClient.Concurrency,
-		MaxRetries:  DefaultClient.MaxRetries,
-		Backoff:     DefaultClient.Backoff,
-		ErrLog:      DefaultClient.ErrLog,
+		Concurrency:   DefaultClient.Concurrency,
+		MaxRetries:    DefaultClient.MaxRetries,
+		Backoff:       DefaultClient.Backoff,
+		ErrLog:        DefaultClient.ErrLog,
+		LogRetries:    true,
+		Verbosity:     2,
+		Threshold:     "info",
+		LogTimeFormat: GlogStringTimeFormat,
 	}
 }
 
@@ -247,13 +265,19 @@ func (c *Client) pester(p params) (*http.Response, error) {
 func (c *Client) LogString() string {
 	var res string
 	for _, e := range c.ErrLog {
-		res += fmt.Sprintf("%d %s [%s] %s request-%d retry-%d error: %s\n",
+		res += fmt.Sprintf("%d %s [%s] to %s request-%d retry-%d error: %s\n",
 			e.Time.Unix(), e.Method, e.Verb, e.URL, e.Request, e.Retry, e.Err)
 	}
 	return res
 }
 
 func (c *Client) log(e ErrEntry) {
+	if c.LogRetries {
+		// glog.V(glog.Level(c.Verbosity)).Infof("%s %s [%s] to %s request-%d retry-%d error: %v\n",
+		// 	e.Time.UTC().Format(c.LogTimeFormat), e.Method, e.Verb, e.URL, e.Request, e.Retry, e.Err)
+		glog.Errorf("%s %s [%s] to %s request-%d retry-%d error: %v\n",
+			e.Time.UTC().Format(c.LogTimeFormat), e.Method, e.Verb, e.URL, e.Request, e.Retry, e.Err)
+	}
 	if c.KeepLog {
 		c.Lock()
 		c.ErrLog = append(c.ErrLog, e)
