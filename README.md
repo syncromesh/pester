@@ -4,6 +4,9 @@
 - Send out multiple requests and get the first back (only used for GET calls)
 - Retry on errors
 - Backoff
+- LogRetries
+
+This variation introduces a dependency on the github.com/sbowman/glog fork of github.com/golang/glog. This dependency allows a client to log each retry as an Error. Configuration of glog is external to the package. When using the the constructor form of the pester client, logging of retries is enabled by default. To disable set the LogRetries attribute to false. 
 
 ### Simple Example
 Use `pester` where you would use the http client calls. By default, pester will use a concurrency of 1, and retry the endpoint 3 times with the `DefaultBackoff` strategy of waiting 1 second between retries.
@@ -38,6 +41,7 @@ For a complete and working example, see the sample directory.
 - reties
 - concurrency
 - keeping a log for debugging
+- logging each retry as an Error separately from the in memory log
 ```go
 package main
 
@@ -67,6 +71,8 @@ func main() {
         client.MaxRetries = 5
         client.Backoff = pester.ExponentialBackoff
         client.KeepLog = true
+        // Disable glog logging of each retry
+        client.LogRetries = false
 
         resp, err := client.Get("http://example.com")
         if err != nil {
