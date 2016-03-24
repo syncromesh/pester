@@ -233,6 +233,10 @@ func (c *Client) pester(p params) (*http.Response, error) {
 					return
 				}
 
+				if err == nil {
+					err = fmt.Errorf("%v", resp.Status)
+				}
+
 				c.log(ErrEntry{
 					Time:    time.Now(),
 					Method:  p.method,
