@@ -277,8 +277,9 @@ func (c *Client) LogString() string {
 
 func (c *Client) log(e ErrEntry) {
 	if c.LogRetries {
-		// glog.V(glog.Level(c.Verbosity)).Infof("%s %s [%s] to %s request-%d retry-%d error: %v\n",
-		// 	e.Time.UTC().Format(c.LogTimeFormat), e.Method, e.Verb, e.URL, e.Request, e.Retry, e.Err)
+		// Could use glog.V(glog.Level(c.Verbosity)).Infof(...) but Errors tend
+		// to be more visible to operational people which is the primary reason
+		// for this fork and update.
 		glog.Errorf("%s %s [%s] to %s request-%d retry-%d error: %v\n",
 			e.Time.UTC().Format(c.LogTimeFormat), e.Method, e.Verb, e.URL, e.Request, e.Retry, e.Err)
 	}
@@ -316,6 +317,8 @@ func (c *Client) PostForm(url string, data url.Values) (resp *http.Response, err
 
 ////////////////////////////////////////
 // Provide self-constructing variants //
+//                                    //
+// NOTE: These will NOT glog retries  //
 ////////////////////////////////////////
 
 // Do provides the same functionality as http.Client.Do and creates its own constructor
