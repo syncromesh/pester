@@ -280,7 +280,9 @@ func (c *Client) log(e ErrEntry) {
 		// Could use glog.V(glog.Level(c.Verbosity)).Infof(...) but Errors tend
 		// to be more visible to operational people which is the primary reason
 		// for this fork and update.
-		glog.Errorf("%s %s [%s] to %s request-%d retry-%d error: %v\n",
+
+		// Error Code 602 is a "SendError"
+		glog.EC(602).Errorf("%s %s [%s] to %s request-%d retry-%d error: %v\n",
 			e.Time.UTC().Format(c.LogTimeFormat), e.Method, e.Verb, e.URL, e.Request, e.Retry, e.Err)
 	}
 	if c.KeepLog {
