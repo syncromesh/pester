@@ -13,14 +13,27 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
-	"github.com/sbowman/glog"
+	// "github.com/sbowman/glog"
 )
 
-// GlogStringTimeFormat produces timestamp strings like hh:mm:ss.uuuuuu
-var GlogStringTimeFormat = `15:04:05.999999`
+// SendErrorCode is the code for logging send errors via the LogWriter
+const SendErrorCode = 602
+
+// RFC3339Ms is the time format with milliseconds.
+const RFC3339Ms = "2006-01-02T15:04:05.000Z07:00"
+
+// LogStringTimeFormat produces timestamp strings like hh:mm:ss.uuuuuu
+const LogStringTimeFormat = `15:04:05.999999`
+
+// ExternalLogger is a function that is called when LogRetries is true.
+// Same signature as glog.Errorf(format string, args ...interface{}))
+type ExternalLogger func(format string, args ...interface{})
 
 // Client wraps the http client and exposes all the functionality of the http.Client.
 // Additionally, Client provides pester specific values for handling resiliency.
@@ -39,12 +52,20 @@ type Client struct {
 	Backoff     BackoffStrategy
 	KeepLog     bool
 
-	// LogRetries enables logging of retries when they happen - uses sbowman/glog
+	// A logger provided externally - timestamp may not be what is expected
+	Logger func(string)
+
+	// LogWriter is used to send a pre-formatted log message to (e.g. STDOUT/ERR)
+	LogWriter io.Writer
+
+	// LogRetries enables logging of retries when they happen
 	LogRetries bool
+
 	// Verbosity of debug messages; 0 is no debug (info only), 3 is most verbose.
 	Verbosity int
 	// Threshhold - Minimum log level to output to console (info, warn, error, or fatal)
 	Threshold string
+
 	// LogTimeFormat is used to format the time when LogRetries is true
 	LogTimeFormat string
 
@@ -96,7 +117,7 @@ func New() *Client {
 		LogRetries:    true,
 		Verbosity:     2,
 		Threshold:     "info",
-		LogTimeFormat: GlogStringTimeFormat,
+		LogTimeFormat: LogStringTimeFormat,
 	}
 }
 
@@ -275,15 +296,44 @@ func (c *Client) LogString() string {
 	return res
 }
 
+// log has been hacked
 func (c *Client) log(e ErrEntry) {
-	if c.LogRetries {
-		// Could use glog.V(glog.Level(c.Verbosity)).Infof(...) but Errors tend
-		// to be more visible to operational people which is the primary reason
-		// for this fork and update.
+	if c.LogRetries { //&& c.Logger != nil {
 
-		// Error Code 602 is a "SendError"
-		glog.EC(602).Errorf("%s %s [%s] to %s request-%d retry-%d error: %v\n",
-			e.Time.UTC().Format(c.LogTimeFormat), e.Method, e.Verb, e.URL, e.Request, e.Retry, e.Err)
+		if c.Logger != nil {
+			// Calling the external logger works except the timestamp is "zero" time
+			msg := fmt.Sprintf("%s %s [%s] to %s request-%d retry-%d error: %v",
+				e.Time.UTC().Format(c.LogTimeFormat), e.Method, e.Verb, e.URL, e.Request, e.Retry, e.Err)
+			c.Logger(msg)
+		}
+
+		if c.LogWriter != nil {
+			// Error code, time, file:line, message
+			format := "I %04d %s [%s:%d] %s\n" // Infof format
+
+			// Time, file:line, message
+			// format := "D      %s [%s:%d] %s\n" // Debugf format
+
+			_, file, line, ok := runtime.Caller(1)
+
+			t := e.Time.UTC().Format(RFC3339Ms)
+
+			lwmsg := fmt.Sprintf("%s %s [%s] to %s request-%d retry-%d error: %v",
+				e.Time.UTC().Format(c.LogTimeFormat), e.Method, e.Verb, e.URL, e.Request, e.Retry, e.Err)
+
+			var logmsg string
+			if ok {
+				dir := filepath.Dir(file)
+				dir = filepath.Base(dir)
+				file = dir + string(os.PathSeparator) + filepath.Base(file)
+				// 602 is a SendError
+				logmsg = fmt.Sprintf(format, SendErrorCode, t, file, line, lwmsg)
+			} else {
+				logmsg = fmt.Sprintf(format, SendErrorCode, t, "n/a", 0, lwmsg)
+			}
+
+			c.LogWriter.Write([]byte(logmsg))
+		}
 	}
 	if c.KeepLog {
 		c.Lock()
@@ -320,7 +370,7 @@ func (c *Client) PostForm(url string, data url.Values) (resp *http.Response, err
 ////////////////////////////////////////
 // Provide self-constructing variants //
 //                                    //
-// NOTE: These will NOT glog retries  //
+// NOTE: These will NOT  log retries  //
 ////////////////////////////////////////
 
 // Do provides the same functionality as http.Client.Do and creates its own constructor
