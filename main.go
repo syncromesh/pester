@@ -18,8 +18,6 @@ import (
 	"runtime"
 	"sync"
 	"time"
-
-	// "github.com/sbowman/glog"
 )
 
 // SendErrorCode is the code for logging send errors via the LogWriter
@@ -39,7 +37,7 @@ type ExternalLogger func(format string, args ...interface{})
 // Additionally, Client provides pester specific values for handling resiliency.
 type Client struct {
 	// wrap it to provide access to http built ins
-	hc http.Client
+	hc *http.Client
 
 	Transport     http.RoundTripper
 	CheckRedirect func(req *http.Request, via []*http.Request) error
@@ -52,19 +50,16 @@ type Client struct {
 	Backoff     BackoffStrategy
 	KeepLog     bool
 
-	// A logger provided externally - timestamp may not be what is expected
+	// A logger function provided externally - called when LogRetries is true
 	Logger func(string)
 
 	// LogWriter is used to send a pre-formatted log message to (e.g. STDOUT/ERR)
+	// when LogRetries is true
 	LogWriter io.Writer
 
-	// LogRetries enables logging of retries when they happen
+	// LogRetries enables logging of retries when they happen via the
+	// Logger function and/or the LogWriter
 	LogRetries bool
-
-	// Verbosity of debug messages; 0 is no debug (info only), 3 is most verbose.
-	Verbosity int
-	// Threshhold - Minimum log level to output to console (info, warn, error, or fatal)
-	Threshold string
 
 	// LogTimeFormat is used to format the time when LogRetries is true
 	LogTimeFormat string
@@ -72,12 +67,15 @@ type Client struct {
 	SuccessReqNum   int
 	SuccessRetryNum int
 
+	wg *sync.WaitGroup
+
 	sync.Mutex
 	ErrLog []ErrEntry
 }
 
 // ErrEntry is used to provide the LogString() data and is populated
-// each time an error happens if KeepLog is set
+// each time an error happens if KeepLog is set.
+// ErrEntry.Retry is deprecated in favor of ErrEntry.Attempt
 type ErrEntry struct {
 	Time    time.Time
 	Method  string
@@ -85,6 +83,7 @@ type ErrEntry struct {
 	Verb    string
 	Request int
 	Retry   int
+	Attempt int
 	Err     error
 }
 
@@ -114,11 +113,18 @@ func New() *Client {
 		MaxRetries:    DefaultClient.MaxRetries,
 		Backoff:       DefaultClient.Backoff,
 		ErrLog:        DefaultClient.ErrLog,
+		wg:            &sync.WaitGroup{},
 		LogRetries:    true,
-		Verbosity:     2,
-		Threshold:     "info",
 		LogTimeFormat: LogStringTimeFormat,
 	}
+}
+
+// NewExtendedClient allows you to pass in an http.Client that is previously set up
+// and extends it to have Pester's features of concurrency and retries.
+func NewExtendedClient(hc *http.Client) *Client {
+	c := New()
+	c.hc = hc
+	return c
 }
 
 // BackoffStrategy is used to determine how long a retry request should wait until attempted
@@ -177,9 +183,16 @@ func jitter(i int) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
+// Wait blocks until all pester requests have returned
+// Probably not that useful outside of testing.
+func (c *Client) Wait() {
+	c.wg.Wait()
+}
+
 // pester provides all the logic of retries, concurrency, backoff, and logging
 func (c *Client) pester(p params) (*http.Response, error) {
 	resultCh := make(chan result)
+	multiplexCh := make(chan result)
 	finishCh := make(chan struct{})
 
 	// GET calls should be idempotent and can make use
@@ -188,6 +201,14 @@ func (c *Client) pester(p params) (*http.Response, error) {
 	concurrency := c.Concurrency
 	if p.verb != "GET" {
 		concurrency = 1
+	}
+
+	if c.hc == nil {
+		c.hc = &http.Client{}
+		c.hc.Transport = c.Transport
+		c.hc.CheckRedirect = c.CheckRedirect
+		c.hc.Jar = c.Jar
+		c.hc.Timeout = c.Timeout
 	}
 
 	// re-create the http client so we can leverage the std lib
@@ -216,17 +237,27 @@ func (c *Client) pester(p params) (*http.Response, error) {
 		}
 	}
 
-	for req := 0; req < concurrency; req++ {
-		go func(n int, p params) {
-			resp := &http.Response{}
-			var err error
+	AttemptLimit := c.MaxRetries
+	if AttemptLimit <= 0 {
+		AttemptLimit = 1
+	}
 
-			for i := 0; i < c.MaxRetries; i++ {
+	for req := 0; req < concurrency; req++ {
+		c.wg.Add(1)
+		go func(n int, p params) {
+			defer c.wg.Done()
+
+			var err error
+			for i := 1; i <= AttemptLimit; i++ {
+				c.wg.Add(1)
+				defer c.wg.Done()
 				select {
 				case <-finishCh:
 					return
 				default:
 				}
+				resp := &http.Response{}
+
 				// rehydrate the body (it is drained each read)
 				if len(originalRequestBody) > 0 {
 					p.req.Body = ioutil.NopCloser(bytes.NewBuffer(originalRequestBody))
@@ -234,6 +265,7 @@ func (c *Client) pester(p params) (*http.Response, error) {
 				if len(originalBody) > 0 {
 					p.body = bytes.NewBuffer(originalBody)
 				}
+
 				// route the calls
 				switch p.method {
 				case "Do":
@@ -248,14 +280,11 @@ func (c *Client) pester(p params) (*http.Response, error) {
 					resp, err = httpClient.PostForm(p.url, p.data)
 				}
 
-				// 200 and 300 level errors are considered success and we are done
-				if err == nil && resp.StatusCode < 400 {
-					resultCh <- result{resp: resp, err: err, req: n, retry: i}
+				// Early return if we have a valid result
+				// Only retry (ie, continue the loop) on 5xx status codes
+				if err == nil && resp.StatusCode < 500 {
+					multiplexCh <- result{resp: resp, err: err, req: n, retry: i}
 					return
-				}
-
-				if err == nil {
-					err = fmt.Errorf("%v", resp.Status)
 				}
 
 				c.log(ErrEntry{
@@ -264,30 +293,60 @@ func (c *Client) pester(p params) (*http.Response, error) {
 					Verb:    p.verb,
 					URL:     p.url,
 					Request: n,
-					Retry:   i,
+					Retry:   i + 1, // would remove, but would break backward compatibility
+					Attempt: i,
 					Err:     err,
 				})
+
+				// if it is the last iteration, grab the result (which is an error at this point)
+				if i == AttemptLimit {
+					multiplexCh <- result{resp: resp, err: err}
+					return
+				}
+
+				// if we are retrying, we should close this response body to free the fd
+				if resp != nil {
+					resp.Body.Close()
+				}
 
 				// prevent a 0 from causing the tick to block, pass additional microsecond
 				<-time.Tick(c.Backoff(i) + 1*time.Microsecond)
 			}
-			resultCh <- result{resp: resp, err: err}
 		}(req, p)
 	}
 
-	for {
-		select {
-		case res := <-resultCh:
-			close(finishCh)
-			c.SuccessReqNum = res.req
-			c.SuccessRetryNum = res.retry
-			return res.resp, res.err
+	// spin off the go routine so it can continually listen in on late results and close the response bodies
+	go func() {
+		gotFirstResult := false
+		for {
+			select {
+			case res := <-multiplexCh:
+				if !gotFirstResult {
+					gotFirstResult = true
+					close(finishCh)
+					resultCh <- res
+				} else if res.resp != nil {
+					// we only return one result to the caller; close all other response bodies that come back
+					// drain the body before close as to not prevent keepalive. see https://gist.github.com/mholt/eba0f2cc96658be0f717
+					io.Copy(ioutil.Discard, res.resp.Body)
+					res.resp.Body.Close()
+				}
+			}
 		}
+	}()
+
+	select {
+	case res := <-resultCh:
+		c.SuccessReqNum = res.req
+		c.SuccessRetryNum = res.retry
+		return res.resp, res.err
 	}
 }
 
 // LogString provides a string representation of the errors the client has seen
 func (c *Client) LogString() string {
+	c.Lock()
+	defer c.Unlock()
 	var res string
 	for _, e := range c.ErrLog {
 		res += fmt.Sprintf("%d %s [%s] to %s request-%d retry-%d error: %s\n",
@@ -296,7 +355,21 @@ func (c *Client) LogString() string {
 	return res
 }
 
-// log has been hacked
+// LogErrCount is a helper method used primarily for test validation
+func (c *Client) LogErrCount() int {
+	c.Lock()
+	defer c.Unlock()
+	return len(c.ErrLog)
+}
+
+// EmbedHTTPClient allows you to extend an existing Pester client with an
+// underlying http.Client, such as https://godoc.org/golang.org/x/oauth2/google#DefaultClient
+func (c *Client) EmbedHTTPClient(hc *http.Client) {
+	c.hc = hc
+}
+
+// log has been revised from the original sethgrid/pester implementation
+// to use an externally provided logger function and/or io.Writer (e.g. STDERR)
 func (c *Client) log(e ErrEntry) {
 	if c.LogRetries { //&& c.Logger != nil {
 

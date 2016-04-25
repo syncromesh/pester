@@ -71,7 +71,7 @@ func main() {
         client.MaxRetries = 5
         client.Backoff = pester.ExponentialBackoff
         client.KeepLog = true
-        // Disable glog logging of each retry
+        // Disable externally provisioned logging of each retry
         client.LogRetries = false
 
         resp, err := client.Get("http://example.com")
@@ -116,6 +116,16 @@ Output:
 1432402839 Get [GET] http://localhost:9000/foo request-0 retry-2 error: Get http://localhost:9000/foo: dial tcp 127.0.0.1:9000: connection refused
 */
 ```
+
+### Tests
+
+You can run tests in the root directory with `$ go test`. There is a benchmark-like test available with `$ cd benchmarks; go test`.
+You can see `pester` in action with `$ cd sample; go run main.go`.
+
+For watching open file descriptors, you can run `watch "lsof -i -P | grep main"` if you started the app with `go run main.go`.
+I did this for watching for FD leaks. My method was to alter `sample/main.go` to only run one case (`pester.Get with set backoff stategy, concurrency and retries increased`)
+and adding a sleep after the result came back. This let me verify if FDs were getting left open when they should have closed. If you know a better way, let me know!
+I was able to see that FDs are now closing when they should :)
 
 ![Are we there yet?](http://butchbellah.com/wp-content/uploads/2012/06/Are-We-There-Yet.jpg)
 
